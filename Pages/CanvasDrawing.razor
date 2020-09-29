@@ -1,0 +1,401 @@
+﻿@page "/CanvasDrawing"
+@using Blazor.Extensions
+@using Blazor.Extensions.Canvas
+@using Blazor.Extensions.Canvas.Canvas2D
+@using System.Text.Json
+@using Tewr.Blazor.FileReader
+@using System.IO
+@using System.Drawing
+@using netDxf
+@using netDxf.Entities
+@inject IFileReaderService fileReaderService;
+@inject IJSRuntime jsRuntime
+
+<input type="file" @ref=inputTypeFileElement /><button @onclick=ReadFile>Read file</button>
+
+@* https://www.codeproject.com/Articles/5269947/Drawing-with-the-HTML-Canvas-Element-in-Blazor-Ser *@
+<div @ref="divCanvas" @onmousewheel="OnMouseWheel" @onmousedown="OnMouseDown" @onmouseup="OnMouseUp" @onmouseover="OnMouseOver" @onmouseout="OnMouseOut" @onmousemove="OnMouseMove">
+    <BECanvas @ref="canvas" Height="800" Width="800"></BECanvas>    
+    <BECanvas @ref="offscreenCanvas" Height="800" Width="800"></BECanvas>
+</div>
+
+<h3>CanvasDrawing</h3>
+
+@code {
+    ElementReference inputTypeFileElement;
+
+    ElementReference divCanvas;
+    BECanvasComponent canvas;
+    BECanvasComponent offscreenCanvas;
+    Canvas2DContext context;
+    Canvas2DContext offscreenContext;
+
+    DxfDocument dxf;
+
+
+    // https://stackoverflow.com/questions/3420975/html5-canvas-zooming
+    // https://jsfiddle.net/u5ogmh9a/
+    Margin canvasOffset = new Margin(); // to hold the offset to the surrounding div
+    Point2D mouseDownPos = new Point2D();
+    Point2D translatePos = new Point2D();
+    double scale = 1.0;
+    double scaleMultiplier = 0.95;
+    Point2D startDragOffset = new Point2D();
+    bool mouseDown = false;
+
+    public struct Point2D
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+
+        public Point2D(double x, double y) : this()
+        {
+            X = x;
+            Y = y;
+        }
+    }
+
+    public struct Margin
+    {
+        public double Top { get; set; }
+        public double Bottom { get; set; }
+
+        public double Left { get; set; }
+        public double Right { get; set; }
+
+        public Margin(double left, double top, double right, double bottom) : this()
+        {
+            Left = left;
+            Top = top;
+            Right = right;
+            Bottom = bottom;
+        }
+    }
+
+    public async Task ReadFile()
+    {
+        foreach (var file in await fileReaderService.CreateReference(inputTypeFileElement).EnumerateFilesAsync())
+        {
+            // Read file fully into memory and act
+            using (MemoryStream memoryStream = await file.CreateMemoryStreamAsync(4096))
+            {
+                // Sync calls are ok once file is in memory
+                //memoryStream.Read(buffer, ...)
+                dxf = DxfDocument.Load(memoryStream);
+                await DrawOffscreen();
+            }
+        }
+    }
+
+    void AddLayers()
+    {
+        foreach (var lay in dxf.Layers)
+        {
+        }
+    }
+
+    async Task AddGraph()
+    {
+        await AddCircles();
+
+        await AddEllipses();
+
+        await AddArcs();
+
+        await AddLines();
+
+        await AddPolylines();
+
+        await AddText();
+
+        await AddMText();
+    }
+
+    async Task AddCircles()
+    {
+        await offscreenContext.BeginPathAsync(); // begin
+
+        foreach (var c in dxf.Circles)
+        {
+            await offscreenContext.MoveToAsync(c.Center.X + c.Radius, c.Center.Y);
+            await offscreenContext.ArcAsync(c.Center.X, c.Center.Y, c.Radius, 0, 2 * Math.PI, false);
+        }
+
+        await offscreenContext.ClosePathAsync(); // end
+
+        await offscreenContext.SetLineWidthAsync(1);
+        await offscreenContext.SetStrokeStyleAsync("#0000ff");
+        await offscreenContext.StrokeAsync();
+    }
+
+    async Task AddEllipses()
+    {
+
+    }
+
+    async Task AddArcs()
+    {
+        // https://stackoverflow.com/questions/23633665/drawing-dxf-arc-using-wpf-arcsegment
+        // https://www.haolizi.net/example/view_14088.html
+        await offscreenContext.BeginPathAsync(); // begin
+
+        foreach (var arc in dxf.Arcs)
+        {
+            double startX = (arc.Center.X + Math.Cos(arc.StartAngle * Math.PI / 180) * arc.Radius);
+            double startY = (arc.Center.Y + Math.Sin(arc.StartAngle * Math.PI / 180) * arc.Radius);
+
+            double endX = (arc.Center.X + Math.Cos(arc.EndAngle * Math.PI / 180) * arc.Radius);
+            double endY = (arc.Center.Y + Math.Sin(arc.EndAngle * Math.PI / 180) * arc.Radius);
+
+            bool isCounterClockwise = false;
+
+            double sweep = 0.0;
+            if (arc.EndAngle < arc.StartAngle)
+            {
+                sweep = (360 + arc.EndAngle) - arc.StartAngle;
+            }
+            else
+            {
+                sweep = Math.Abs(arc.EndAngle - arc.StartAngle);
+            }
+            await offscreenContext.StrokeTextAsync("" + sweep, startX+2, startY+2);
+
+            bool isLargeArc = sweep >= 180;
+
+            await offscreenContext.MoveToAsync(startX, startY);
+            await offscreenContext.ArcAsync(arc.Center.X, arc.Center.Y, arc.Radius, arc.StartAngle * Math.PI / 180, arc.EndAngle * Math.PI / 180, isCounterClockwise);
+        }
+
+        await offscreenContext.ClosePathAsync(); // end
+
+        await offscreenContext.SetLineWidthAsync(1);
+        await offscreenContext.SetStrokeStyleAsync("#000000");
+        await offscreenContext.StrokeAsync();
+    }
+
+    async Task AddLines()
+    {
+        await offscreenContext.BeginPathAsync(); // begin
+
+        foreach (var l in dxf.Lines)
+        {
+            await offscreenContext.MoveToAsync(l.StartPoint.X, l.StartPoint.Y);
+            await offscreenContext.LineToAsync(l.EndPoint.X, l.EndPoint.Y);
+        }
+
+        await offscreenContext.ClosePathAsync(); // end
+
+        await offscreenContext.SetLineWidthAsync(1);
+        await offscreenContext.SetStrokeStyleAsync("#cc00ff");
+        await offscreenContext.StrokeAsync();
+    }
+
+    async Task AddPolylines()
+    {
+        await offscreenContext.BeginPathAsync(); // begin
+
+        foreach (var polygon in dxf.LwPolylines)
+        {
+            double bulge = 0;
+            Point2D prePoint = new Point2D();
+            Point2D point = new Point2D();
+
+            for (int i = 0; i < polygon.Vertexes.Count(); i++)
+            {
+                var seg = polygon.Vertexes[i];
+                point = new Point2D(seg.Position.X, seg.Position.Y);
+
+                if (i == 0)
+                {
+                    prePoint = point;
+                    bulge = seg.Bulge;
+
+                    await offscreenContext.MoveToAsync(point.X, point.Y);
+                }
+                else
+                {
+                    if (bulge != 0)
+                    {
+                        double angle = 4 * Math.Atan(Math.Abs(bulge)) / Math.PI * 180;
+                        double length = Math.Sqrt((point.X - prePoint.X) * (point.X - prePoint.X) + (point.Y - prePoint.Y) * (point.Y - prePoint.Y));
+                        double radius = Math.Abs(length / (2 * Math.Sin(angle / 360 * Math.PI)));
+
+                        await offscreenContext.ArcAsync(point.X, point.Y, radius, 0, angle * Math.PI / 180, false);
+                    }
+
+                    prePoint = point;
+                    bulge = seg.Bulge;
+                }
+            }
+        }
+
+        await offscreenContext.ClosePathAsync(); // end
+
+        await offscreenContext.SetLineWidthAsync(1);
+        await offscreenContext.SetStrokeStyleAsync("#002266");
+        await offscreenContext.StrokeAsync();
+    }
+
+    async Task AddText()
+    {
+
+    }
+
+    async Task AddMText()
+    {
+
+    }
+
+
+    async Task DrawOffscreen()
+    {
+        //await offscreenContext.BeginPathAsync(); // begin custom shape
+        //await offscreenContext.MoveToAsync(-119, -20);
+        //await offscreenContext.BezierCurveToAsync(-159, 0, -159, 50, -59, 50);
+        //await offscreenContext.BezierCurveToAsync(-39, 80, 31, 80, 51, 50);
+        //await offscreenContext.BezierCurveToAsync(131, 50, 131, 20, 101, 0);
+        //await offscreenContext.BezierCurveToAsync(141, -60, 81, -70, 51, -50);
+        //await offscreenContext.BezierCurveToAsync(31, -95, -39, -80, -39, -50);
+        //await offscreenContext.BezierCurveToAsync(-89, -95, -139, -80, -119, -20);
+        //await offscreenContext.ClosePathAsync(); // complete custom shape
+        //await offscreenContext.SetLineWidthAsync(4);
+        //await offscreenContext.SetStrokeStyleAsync("#0000ff");
+        //await offscreenContext.StrokeAsync();
+
+        if (dxf != null)
+        {
+            //AddLayers();
+            await AddGraph();
+        }
+    }
+
+    async Task Draw(double scale, Point2D translatePos)
+    {
+        context = await canvas.CreateCanvas2DAsync();
+        if (context != null)
+        {
+            // debug section
+            await context.SaveAsync();
+            await context.SetTransformAsync(1, 0, 0, 1, 0, 0); // set default transform
+
+            // clear canvas
+            await context.ClearRectAsync(0, 0, canvas.Width, canvas.Height);
+
+            // coordinates
+            await context.SetFillStyleAsync("Red");
+            await context.FillRectAsync(mouseDownPos.X, mouseDownPos.Y, 5, 5);
+
+            // debug text
+            await context.StrokeTextAsync("StartDragX: " + startDragOffset.X + "   StartDragY: " + startDragOffset.Y, 20, 20);
+            await context.StrokeTextAsync("TranslateX: " + translatePos.X + "   TranslateY: " + translatePos.Y, 20, 50);
+            await context.StrokeTextAsync("OffsetTop: " + canvasOffset.Top + "   OffsetLeft: " + canvasOffset.Left, 20, 80);
+            await context.StrokeTextAsync("MouseDownX: " + mouseDownPos.X + "   MouseDownY: " + mouseDownPos.Y, 20, 100);
+            await context.RestoreAsync();
+
+
+            // begin actual content
+            await context.SaveAsync();
+            //await context.TranslateAsync(translatePos.X, translatePos.Y);
+            //await context.ScaleAsync(scale, scale);
+            await context.SetTransformAsync(scale, 0, 0, scale, translatePos.X, translatePos.Y);
+
+            // draw offline for faster drawing?
+            await context.DrawImageAsync(offscreenContext.Canvas, 0, 0);
+
+            await context.RestoreAsync();
+        }
+    }
+
+    protected override async void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+        {
+            if (divCanvas.Id?.Length > 0)
+            {
+                string data = await jsRuntime.InvokeAsync<string>("getDivCanvasOffsets",
+                    new object[] { divCanvas });
+                Dictionary<string, double> offsets = JsonSerializer.Deserialize<Dictionary<string, double>>(data);
+                canvasOffset = new Margin()
+                {
+                    Left = offsets.GetValueOrDefault("offsetLeft"),
+                    Top = offsets.GetValueOrDefault("offsetTop")
+                };
+
+                offscreenContext = await offscreenCanvas.CreateCanvas2DAsync();
+                if (offscreenContext != null)
+                {
+                    //translatePos = new Point2D(canvas.Width / 2, canvas.Height / 2); // center
+                    await Draw(scale, translatePos);
+                }
+            }
+        }
+    }
+
+    async void OnMouseWheel(WheelEventArgs e)
+    {
+        var delta = e.DeltaY / 40;
+
+        if (delta < 0)
+        {
+            scale /= scaleMultiplier;
+            if (scale < 0.2) scale = 0.2;
+        }
+        else
+        {
+            scale *= scaleMultiplier;
+            if (scale > 10) scale = 10;
+        }
+
+        //translatePos.X = Math.Round(translatePos.X * scaleMultiplier, 0);
+        //translatePos.Y = Math.Round(translatePos.Y * scaleMultiplier, 0);
+
+        await Draw(scale, translatePos);
+    }
+
+    // add event listeners to handle screen drag
+    async void OnMouseDown(MouseEventArgs e)
+    {
+        mouseDown = true;
+        mouseDownPos = GetRealCoordinate(e);
+
+        startDragOffset.X = mouseDownPos.X - translatePos.X;
+        startDragOffset.Y = mouseDownPos.Y - translatePos.Y;
+
+        await Draw(scale, translatePos);
+    }
+
+    void OnMouseUp(MouseEventArgs e)
+    {
+        mouseDown = false;
+    }
+
+    void OnMouseOver(MouseEventArgs e)
+    {
+        mouseDown = false;
+    }
+
+    void OnMouseOut(MouseEventArgs e)
+    {
+        mouseDown = false;
+    }
+
+    async void OnMouseMove(MouseEventArgs e)
+    {
+        if (mouseDown)
+        {
+            mouseDownPos = GetRealCoordinate(e);
+            translatePos.X = mouseDownPos.X - startDragOffset.X;
+            translatePos.Y = mouseDownPos.Y - startDragOffset.Y;
+
+            await Draw(scale, translatePos);
+        }
+    }
+
+    Point2D GetRealCoordinate(MouseEventArgs e)
+    {
+        double mouseX = e.ClientX - canvasOffset.Left;
+        double mouseY = e.ClientY - canvasOffset.Top;
+
+        return new Point2D(mouseX, mouseY);
+    }
+}
